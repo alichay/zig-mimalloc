@@ -8,12 +8,10 @@ var garbage_state: i32 = 0;
 
 var vtable = Allocator.VTable{};
 
-var allocator_object = Allocator{
+pub const allocator = Allocator{
     .ptr = &garbage_state,
     .vtable = &vtable,
 };
-
-pub const allocator = &allocator_object;
 
 fn mimalloc_alloc(_: *anyopaque, len: usize, ptr_align: u8, _: usize) ?[*]u8 {
     assert(len > 0);
