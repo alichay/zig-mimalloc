@@ -15,33 +15,57 @@ const debug_assert: bool = switch (builtin.mode) {
 };
 
 const DebugThreadId = if (debug_assert) std.Thread.Id else void;
-const DebugBackingHeap = if (debug_assert) mi.mi_heap_t else void;
 
 const Self = @This();
 
-thread_id: DebugThreadId,
-thread_backing_heap: DebugBackingHeap,
+var thread_check_state: if (debug_assert) struct {
+    heap_ptr_to_thread_id: std.AutoHashMap(*mi.mi_heap_t, std.Thread.Id) = .{
+        .unmanaged = .empty,
+        .allocator = @import("global_allocator.zig").allocator,
+        .ctx = undefined,
+    },
+    mtx: std.Thread.Mutex = .{},
+
+    const Self = @This();
+
+    pub fn push(self: *Self, heap: *mi.mi_heap_t) void {
+        self.mtx.lock();
+        defer self.mtx.unlock();
+
+        self.heap_ptr_to_thread_id.put(heap, std.Thread.getCurrentId()) catch unreachable;
+    }
+    pub fn remove(self: *Self, heap: *mi.mi_heap_t) void {
+        self.mtx.lock();
+        defer self.mtx.unlock();
+
+        self.heap_ptr_to_thread_id.remove(heap) catch unreachable;
+    }
+    pub fn get(self: *Self, heap: *mi.mi_heap_t) ?std.Thread.Id {
+        self.mtx.lock();
+        defer self.mtx.unlock();
+
+        return self.heap_ptr_to_thread_id.get(heap);
+    }
+} else struct {} = .{};
+
 internal: *mi.mi_heap_t,
 
-inline fn debug_assert_thread(self: *Self) void {
+inline fn debug_assert_thread(heap: *mi.mi_heap_t) void {
     comptime if (debug_assert) {
-        assert(self.thread_id == std.Thread.getCurrentId());
+        if (thread_check_state.get(heap)) |thread_id| {
+            assert(thread_id == std.Thread.getCurrentId());
+        } else {
+            std.log.err("thread_check_state.get(heap) returned null", .{});
+        }
     };
 }
 
 fn from_c(heap: *mi.mi_heap_t) Self {
-    var thread_id: DebugThreadId = undefined;
-    var thread_backing_heap: DebugBackingHeap = undefined;
     comptime if (debug_assert) {
-        thread_id = std.Thread.getCurrentId();
-        thread_backing_heap = mi.mi_heap_get_backing() orelse unreachable;
+        thread_check_state.push(heap);
     };
 
-    return .{
-        .thread_id = thread_id,
-        .thread_backing_heap = thread_backing_heap,
-        .internal = heap,
-    };
+    return .{ .internal = heap };
 }
 
 /// Create a new heap.
@@ -69,7 +93,11 @@ pub fn set_as_thread_default(self: *Self) void {
 pub fn deinit(self: *Self, free_allocations: bool) void {
 
     // Ensure we're not trying to deestroy the backing heap.
-    assert(self.thread_backing_heap != (mi.mi_heap_get_backing() orelse unreachable));
+    assert(self.internal != (mi.mi_heap_get_backing() orelse unreachable));
+
+    comptime if (debug_assert) {
+        thread_check_state.remove(self.internal);
+    };
 
     if (free_allocations) {
         mi.mi_heap_destroy(self.internal);
@@ -142,6 +170,14 @@ pub fn realloc(self: *Self, buf: []u8, new_len: usize, opt_ptr_align: ?u8) ?[]u8
     return (ret orelse return null)[0..new_len];
 }
 
+pub inline fn free(_: *Self, ptr: *const anyopaque, opt_ptr_align: ?u8) void {
+    if (opt_ptr_align) |ptr_align| {
+        mi.mi_free_aligned(ptr, ptr_align);
+    } else {
+        mi.mi_free(ptr);
+    }
+}
+
 /// Release outstanding resources.
 /// Regular code should not have to call this function. It can be beneficial in very narrow circumstances;
 /// in particular, when a long running thread allocates a lot of blocks that are freed by other
@@ -153,4 +189,30 @@ pub fn collect(self: *Self, force: bool) void {
 
 pub fn owns(self: *Self, ptr: *const anyopaque) bool {
     return mi.mi_heap_check_owned(self.internal, ptr);
+}
+
+fn allocator_alloc(ctx: *anyopaque, len: usize, ptr_align: u8, _: usize) ?[*]u8 {
+    var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
+    return heap.malloc(len, ptr_align);
+}
+fn allocator_resize(ctx: *anyopaque, buf: []u8, _: u8, new_len: usize, _: usize) bool {
+    var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
+    return heap.resize_in_place(buf, new_len) != null;
+}
+fn allocator_free(ctx: *anyopaque, buf: []u8, buf_align: u8, _: usize) void {
+    var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
+    assert(buf.len > 0);
+    assert(buf_align > 0);
+    assert(std.math.isPowerOfTwo(buf_align));
+    heap.free(buf.ptr, buf_align);
+}
+
+const vtable = std.mem.Allocator.VTable{
+    .alloc = allocator_alloc,
+    .resize = allocator_resize,
+    .free = allocator_free,
+};
+
+pub fn allocator(self: *Self) std.mem.Allocator {
+    return .{ .ptr = self.internal, .vtable = &vtable };
 }
