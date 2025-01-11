@@ -6,7 +6,11 @@ const mi = @import("c.zig");
 
 var garbage_state: i32 = 0;
 
-var vtable = Allocator.VTable{};
+var vtable = Allocator.VTable{
+    .alloc = mimalloc_alloc,
+    .resize = mimalloc_resize,
+    .free = mimalloc_free,
+};
 
 pub const allocator = Allocator{
     .ptr = &garbage_state,
@@ -18,8 +22,8 @@ fn mimalloc_alloc(_: *anyopaque, len: usize, ptr_align: u8, _: usize) ?[*]u8 {
     assert(ptr_align > 0);
     assert(std.math.isPowerOfTwo(ptr_align));
 
-    var res_ptr = mi.mi_malloc_aligned(len, ptr_align) orelse return null;
-    return @ptrCast([*]u8, res_ptr);
+    const res_ptr = mi.mi_malloc_aligned(len, ptr_align) orelse return null;
+    return @ptrCast(res_ptr);
 }
 
 fn mimalloc_resize(_: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, _: usize) bool {

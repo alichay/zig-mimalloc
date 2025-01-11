@@ -26,21 +26,21 @@ var thread_check_state: if (debug_assert) struct {
     },
     mtx: std.Thread.Mutex = .{},
 
-    const Self = @This();
+    const ThreadCheckState = @This();
 
-    pub fn push(self: *Self, heap: *mi.mi_heap_t) void {
+    pub fn push(self: *ThreadCheckState, heap: *mi.mi_heap_t) void {
         self.mtx.lock();
         defer self.mtx.unlock();
 
         self.heap_ptr_to_thread_id.put(heap, std.Thread.getCurrentId()) catch unreachable;
     }
-    pub fn remove(self: *Self, heap: *mi.mi_heap_t) void {
+    pub fn remove(self: *ThreadCheckState, heap: *mi.mi_heap_t) void {
         self.mtx.lock();
         defer self.mtx.unlock();
 
         self.heap_ptr_to_thread_id.remove(heap) catch unreachable;
     }
-    pub fn get(self: *Self, heap: *mi.mi_heap_t) ?std.Thread.Id {
+    pub fn get(self: *ThreadCheckState, heap: *mi.mi_heap_t) ?std.Thread.Id {
         self.mtx.lock();
         defer self.mtx.unlock();
 
