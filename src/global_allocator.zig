@@ -17,23 +17,24 @@ pub const allocator = Allocator{
     .vtable = &vtable,
 };
 
-fn mimalloc_alloc(_: *anyopaque, len: usize, ptr_align: u8, _: usize) ?[*]u8 {
+fn mimalloc_alloc(_: *anyopaque, len: usize, log2_align: u8, _: usize) ?[*]u8 {
     assert(len > 0);
-    assert(ptr_align > 0);
-    assert(std.math.isPowerOfTwo(ptr_align));
+    assert(log2_align > 0);
+    const alignment = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_align));
 
-    const res_ptr = mi.mi_malloc_aligned(len, ptr_align) orelse return null;
+    const res_ptr = mi.mi_malloc_aligned(len, alignment) orelse return null;
     return @ptrCast(res_ptr);
 }
 
-fn mimalloc_resize(_: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, _: usize) bool {
+fn mimalloc_resize(_: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, _: usize) bool {
     assert(new_len > 0);
     assert(buf.len > 0);
-    assert(buf_align > 0);
-    assert(std.math.isPowerOfTwo(buf_align));
+    assert(log2_align > 0);
 
     return mi.mi_expand(buf.ptr, new_len) != null;
 }
-fn mimalloc_free(_: *anyopaque, buf: []u8, buf_align: u8, _: usize) void {
-    return mi.mi_free_aligned(buf.ptr, buf_align);
+fn mimalloc_free(_: *anyopaque, buf: []u8, log2_align: u8, _: usize) void {
+    assert(log2_align > 0);
+    const alignment = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_align));
+    return mi.mi_free_aligned(buf.ptr, alignment);
 }

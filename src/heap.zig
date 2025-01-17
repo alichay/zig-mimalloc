@@ -107,17 +107,17 @@ pub fn deinit(self: *Self, free_allocations: bool) void {
 }
 
 /// Allocate a block of memory.
-pub fn malloc(self: *Self, len: usize, opt_ptr_align: ?u8) ?[]u8 {
+pub fn malloc(self: *Self, len: usize, opt_ptr_align: ?Allocator.Log2Align) ?[]u8 {
     self.debug_assert_thread();
 
     assert(len > 0);
 
     const ret = alloc: {
-        if (opt_ptr_align) |ptr_align| {
-            assert(ptr_align > 0);
-            assert(std.math.isPowerOfTwo(ptr_align));
+        if (opt_ptr_align) |alignment| {
+            assert(alignment > 0);
+            assert(std.math.isPowerOfTwo(alignment));
 
-            break :alloc mi.mi_heap_malloc_aligned(self.internal, len, ptr_align);
+            break :alloc mi.mi_heap_malloc_aligned(self.internal, len, alignment);
         } else {
             break :alloc mi.mi_heap_malloc(self.internal, len);
         }
@@ -150,18 +150,18 @@ pub fn resize_in_place(_: *Self, buf: []u8, new_len: usize) ?[]u8 {
 /// Buf must be a slice of a previously allocated buffer.
 /// Buf.len must be the same as the previous allocation.
 /// If opt_ptr_align is provided, it must be the same as the previous allocation.
-pub fn realloc(self: *Self, buf: []u8, new_len: usize, opt_ptr_align: ?u8) ?[]u8 {
+pub fn realloc(self: *Self, buf: []u8, new_len: usize, opt_ptr_align: ?Allocator.Log2Align) ?[]u8 {
     self.debug_assert_thread();
 
     assert(buf.len > 0);
     assert(new_len > 0);
 
     const ret = alloc: {
-        if (opt_ptr_align) |ptr_align| {
-            assert(ptr_align > 0);
-            assert(std.math.isPowerOfTwo(ptr_align));
+        if (opt_ptr_align) |alignment| {
+            assert(alignment > 0);
+            assert(std.math.isPowerOfTwo(alignment));
 
-            break :alloc mi.mi_heap_realloc_aligned(self.internal, buf.ptr, new_len, ptr_align);
+            break :alloc mi.mi_heap_realloc_aligned(self.internal, buf.ptr, new_len, alignment);
         } else {
             break :alloc mi.mi_heap_realloc(self.internal, buf.ptr, new_len);
         }
@@ -171,8 +171,10 @@ pub fn realloc(self: *Self, buf: []u8, new_len: usize, opt_ptr_align: ?u8) ?[]u8
 }
 
 pub inline fn free(_: *Self, ptr: *const anyopaque, opt_ptr_align: ?u8) void {
-    if (opt_ptr_align) |ptr_align| {
-        mi.mi_free_aligned(ptr, ptr_align);
+    if (opt_ptr_align) |log2_align| {
+        assert(log2_align > 0);
+        const alignment = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_align));
+        mi.mi_free_aligned(ptr, alignment);
     } else {
         mi.mi_free(ptr);
     }
@@ -191,9 +193,11 @@ pub fn owns(self: *Self, ptr: *const anyopaque) bool {
     return mi.mi_heap_check_owned(self.internal, ptr);
 }
 
-fn allocator_alloc(ctx: *anyopaque, len: usize, ptr_align: u8, _: usize) ?[*]u8 {
+fn allocator_alloc(ctx: *anyopaque, len: usize, log2_align: u8, _: usize) ?[*]u8 {
     var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
-    return heap.malloc(len, ptr_align);
+    assert(log2_align > 0);
+    const alignment = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_align));
+    return heap.malloc(len, alignment);
 }
 fn allocator_resize(ctx: *anyopaque, buf: []u8, _: u8, new_len: usize, _: usize) bool {
     var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
