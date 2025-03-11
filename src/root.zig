@@ -9,7 +9,3 @@ const mi = @import("c.zig");
 pub fn check_owned(ptr: *const anyopaque) bool {
     return mi.mi_check_owned(ptr);
 }
-
-// test "basic add functionality" {
-//     try testing.expect(add(3, 7) == 10);
-// }
