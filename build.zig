@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
     };
     const padding = b.option(bool, "padding", "Enable padding to detect heap block overflow (always on in DEBUG or SECURE mode, or with Valgrind/ASAN)") orelse false;
 
-    if (target.result.isMusl()) {
+    if (target.result.isMuslLibC()) {
         lib_mod.addCMacro("MI_LIBC_MUSL", "1");
     }
 

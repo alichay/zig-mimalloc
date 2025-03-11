@@ -1,6 +1,7 @@
 .{
     .name = .mimalloc,
     .version = "0.1.0",
+    .fingerprint = 0x26391c3983d66e5d,
     .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .@"mimalloc-src" = .{
