@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
-const mi = @import("c.zig");
+const mi = @import("c.zig").mi;
 /// The maximum size of a small allocation.
 /// Usually 128 * sizeof(void*), which is 1KB on 64-bit systems.
 pub const SMALL_ALLOC_MAX: usize = mi.MI_SMALL_SIZE_MAX;
@@ -32,13 +32,13 @@ var thread_check_state: if (debug_assert) struct {
         self.mtx.lock();
         defer self.mtx.unlock();
 
-        self.heap_ptr_to_thread_id.put(heap, std.Thread.getCurrentId()) catch unreachable;
+        self.heap_ptr_to_thread_id.put(heap, std.Thread.getCurrentId()) catch @panic("failed to push heap<->thread id");
     }
     pub fn remove(self: *ThreadCheckState, heap: *mi.mi_heap_t) void {
         self.mtx.lock();
         defer self.mtx.unlock();
 
-        self.heap_ptr_to_thread_id.remove(heap) catch unreachable;
+        if (!self.heap_ptr_to_thread_id.remove(heap)) @panic("heap not found");
     }
     pub fn get(self: *ThreadCheckState, heap: *mi.mi_heap_t) ?std.Thread.Id {
         self.mtx.lock();
@@ -51,53 +51,53 @@ var thread_check_state: if (debug_assert) struct {
 internal: *mi.mi_heap_t,
 
 inline fn debug_assert_thread(heap: *mi.mi_heap_t) void {
-    comptime if (debug_assert) {
+    if (debug_assert) {
         if (thread_check_state.get(heap)) |thread_id| {
             assert(thread_id == std.Thread.getCurrentId());
         } else {
             std.log.err("thread_check_state.get(heap) returned null", .{});
         }
-    };
+    }
 }
 
-fn from_c(heap: *mi.mi_heap_t) Self {
-    comptime if (debug_assert) {
+inline fn from_c(heap: *mi.mi_heap_t) Self {
+    if (debug_assert) {
         thread_check_state.push(heap);
-    };
+    }
 
     return .{ .internal = heap };
 }
 
 /// Create a new heap.
-pub fn new() Self {
+pub inline fn init() Self {
     return from_c(mi.mi_heap_new() orelse @panic("unable to allocate heap"));
 }
 
 /// Get the backing heap. This is the *initial* default heap, and cannot be destroyed.
-pub fn get_backing_heap() Self {
+pub inline fn get_backing_heap() Self {
     return from_c(mi.mi_heap_get_backing() orelse unreachable);
 }
 
 /// Get the thread's current default heap, used for mi_malloc/mi_free etc.
-pub fn get_default() Self {
+pub inline fn get_default() Self {
     return from_c(mi.mi_heap_get_default() orelse unreachable);
 }
 
 /// Set a heap as the thread's default heap. This makes the `global_allocator` use this heap when called from this thread.
-pub fn set_as_thread_default(self: *Self) void {
+pub inline fn set_as_thread_default(self: *Self) void {
     mi.mi_heap_set_default(self.internal);
 }
 
 /// Destroy the heap. If `free_allocations` is true, then all allocations
 /// will be freed - otherwise, they will be returned to the global allocator's heap.
-pub fn deinit(self: *Self, free_allocations: bool) void {
+pub inline fn deinit(self: *Self, free_allocations: bool) void {
 
     // Ensure we're not trying to deestroy the backing heap.
     assert(self.internal != (mi.mi_heap_get_backing() orelse unreachable));
 
-    comptime if (debug_assert) {
+    if (debug_assert) {
         thread_check_state.remove(self.internal);
-    };
+    }
 
     if (free_allocations) {
         mi.mi_heap_destroy(self.internal);
@@ -107,41 +107,43 @@ pub fn deinit(self: *Self, free_allocations: bool) void {
 }
 
 /// Allocate a block of memory.
-pub fn malloc(self: *Self, len: usize, opt_ptr_align: ?Allocator.Log2Align) ?[]u8 {
-    self.debug_assert_thread();
+pub inline fn malloc(self: *Self, len: usize, opt_ptr_align: ?std.mem.Alignment) ?[]u8 {
+    debug_assert_thread(self.internal);
 
     assert(len > 0);
 
     const ret = alloc: {
         if (opt_ptr_align) |alignment| {
-            assert(alignment > 0);
-            assert(std.math.isPowerOfTwo(alignment));
-
-            break :alloc mi.mi_heap_malloc_aligned(self.internal, len, alignment);
+            break :alloc mi.mi_heap_malloc_aligned(self.internal, len, alignment.toByteUnits());
         } else {
             break :alloc mi.mi_heap_malloc(self.internal, len);
         }
-    };
-    return (ret orelse return null)[0..len];
+    } orelse return null;
+
+    const ret_u8: [*]u8 = @ptrCast(ret);
+    return ret_u8[0..len];
 }
 
 /// Allocate a *small* block of memory. `len` must be less than `Heap.SMALL_ALLOC_MAX`.
-pub fn malloc_small(self: *Self, len: usize) ?[]u8 {
-    self.debug_assert_thread();
+pub inline fn malloc_small(self: *Self, len: usize) ?[]u8 {
+    debug_assert_thread(self.internal);
     assert(len > 0);
     assert(len < SMALL_ALLOC_MAX);
 
-    const ret = mi.mi_heap_malloc_small(self.internal, len);
-    return (ret orelse return null)[0..len];
+    const ret = mi.mi_heap_malloc_small(self.internal, len) orelse return null;
+
+    const ret_u8: [*]u8 = @ptrCast(ret);
+    return ret_u8[0..len];
 }
 
-pub fn resize_in_place(_: *Self, buf: []u8, new_len: usize) ?[]u8 {
+pub inline fn resize_in_place(_: *Self, buf: []u8, new_len: usize) ?[]u8 {
     assert(buf.len > 0);
     assert(new_len > 0);
 
     if (mi.mi_expand(buf.ptr, new_len)) |ret| {
-        assert(ret.ptr == buf.ptr);
-        return ret[0..new_len];
+        const ret_u8: [*]u8 = @ptrCast(ret);
+        assert(ret_u8 == buf.ptr);
+        return ret_u8[0..new_len];
     }
     return null;
 }
@@ -150,33 +152,29 @@ pub fn resize_in_place(_: *Self, buf: []u8, new_len: usize) ?[]u8 {
 /// Buf must be a slice of a previously allocated buffer.
 /// Buf.len must be the same as the previous allocation.
 /// If opt_ptr_align is provided, it must be the same as the previous allocation.
-pub fn realloc(self: *Self, buf: []u8, new_len: usize, opt_ptr_align: ?Allocator.Log2Align) ?[]u8 {
-    self.debug_assert_thread();
+pub inline fn realloc(self: *Self, buf: []u8, new_len: usize, opt_ptr_align: ?std.mem.Alignment) ?[]u8 {
+    debug_assert_thread(self.internal);
 
     assert(buf.len > 0);
     assert(new_len > 0);
 
     const ret = alloc: {
         if (opt_ptr_align) |alignment| {
-            assert(alignment > 0);
-            assert(std.math.isPowerOfTwo(alignment));
-
-            break :alloc mi.mi_heap_realloc_aligned(self.internal, buf.ptr, new_len, alignment);
+            break :alloc mi.mi_heap_realloc_aligned(self.internal, buf.ptr, new_len, alignment.toByteUnits());
         } else {
             break :alloc mi.mi_heap_realloc(self.internal, buf.ptr, new_len);
         }
-    };
+    } orelse return null;
 
-    return (ret orelse return null)[0..new_len];
+    const ret_u8: [*]u8 = @ptrCast(ret);
+    return ret_u8[0..new_len];
 }
 
-pub inline fn free(_: *Self, ptr: *const anyopaque, opt_ptr_align: ?u8) void {
-    if (opt_ptr_align) |log2_align| {
-        assert(log2_align > 0);
-        const alignment = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_align));
-        mi.mi_free_aligned(ptr, alignment);
+pub inline fn free(_: *Self, ptr: *const anyopaque, opt_ptr_align: ?std.mem.Alignment) void {
+    if (opt_ptr_align) |alignment| {
+        mi.mi_free_aligned(@constCast(ptr), alignment.toByteUnits());
     } else {
-        mi.mi_free(ptr);
+        mi.mi_free(@constCast(ptr));
     }
 }
 
@@ -185,7 +183,7 @@ pub inline fn free(_: *Self, ptr: *const anyopaque, opt_ptr_align: ?u8) void {
 /// in particular, when a long running thread allocates a lot of blocks that are freed by other
 /// threads it may improve resource usage by calling this every once in a while.
 pub fn collect(self: *Self, force: bool) void {
-    self.debug_assert_thread();
+    debug_assert_thread(self.internal);
     mi.mi_heap_collect(self.internal, force);
 }
 
@@ -193,27 +191,31 @@ pub fn owns(self: *Self, ptr: *const anyopaque) bool {
     return mi.mi_heap_check_owned(self.internal, ptr);
 }
 
-fn allocator_alloc(ctx: *anyopaque, len: usize, log2_align: u8, _: usize) ?[*]u8 {
+fn allocator_alloc(ctx: *anyopaque, len: usize, log2_align: std.mem.Alignment, _: usize) ?[*]u8 {
     var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
-    assert(log2_align > 0);
-    const alignment = @as(usize, 1) << @as(Allocator.Log2Align, @intCast(log2_align));
-    return heap.malloc(len, alignment);
+    const ret: []u8 = heap.malloc(len, log2_align) orelse return null;
+    return @ptrCast(ret.ptr);
 }
-fn allocator_resize(ctx: *anyopaque, buf: []u8, _: u8, new_len: usize, _: usize) bool {
+fn allocator_resize(ctx: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
     var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
     return heap.resize_in_place(buf, new_len) != null;
 }
-fn allocator_free(ctx: *anyopaque, buf: []u8, buf_align: u8, _: usize) void {
+fn allocator_remap(ctx: *anyopaque, buf: []u8, log2_align: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
     var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
     assert(buf.len > 0);
-    assert(buf_align > 0);
-    assert(std.math.isPowerOfTwo(buf_align));
+    const ret = heap.realloc(buf, new_len, log2_align) orelse return null;
+    return @ptrCast(ret.ptr);
+}
+fn allocator_free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, _: usize) void {
+    var heap = Self{ .internal = @ptrCast(@alignCast(ctx)) };
+    assert(buf.len > 0);
     heap.free(buf.ptr, buf_align);
 }
 
 const vtable = std.mem.Allocator.VTable{
     .alloc = allocator_alloc,
     .resize = allocator_resize,
+    .remap = allocator_remap,
     .free = allocator_free,
 };
 

@@ -1,3 +1,3 @@
-pub usingnamespace @cImport({
+pub const mi = @cImport({
     @cInclude("mimalloc.h");
 });

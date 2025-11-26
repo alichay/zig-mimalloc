@@ -49,7 +49,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const tsan = lib_mod.sanitize_thread != null and lib_mod.sanitize_thread.?;
-    const ubsan = lib_mod.sanitize_c != null and lib_mod.sanitize_c.?;
+    const ubsan = lib_mod.sanitize_c != null and (lib_mod.sanitize_c.? != .off);
     const valgrind = lib_mod.valgrind != null and lib_mod.valgrind.?;
 
     if (tsan) {
