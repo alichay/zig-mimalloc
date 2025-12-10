@@ -4,8 +4,8 @@ const Allocator = std.mem.Allocator;
 
 pub const global_allocator = @import("global_allocator.zig").allocator;
 pub const Heap = @import("Heap.zig");
-const mi = @import("c.zig").mi;
+pub const c = @import("c.zig").mi;
 
 pub fn check_owned(ptr: *const anyopaque) bool {
-    return mi.mi_check_owned(ptr);
+    return c.mi_check_owned(ptr);
 }
